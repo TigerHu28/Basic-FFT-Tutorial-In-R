@@ -1,0 +1,594 @@
+---
+title: "Final Project: Fast Fourier Transformation in Time Series"
+author: "Haizhu Hong, Nikhil Daga, Pavan Bondalapati, Pengwei Hu"
+date: "Dec 2020"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+cache: TRUE
+---
+
+**SYS 6018 | Fall 2020 | University of Virginia **
+
+*******************************************
+
+<!--- Below are global settings for knitr. You can override any of them by adding the changes to individual chunks --->
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(error=TRUE,        # Keep compiling upon error
+                      collapse=FALSE,    # collapse by default
+                      echo=TRUE,         # echo code by default
+                      comment = "#>",    # change comment character
+                      fig.width = 10,     # set figure width
+                      fig.align = "center",# set figure position
+                      # out.width = "49%", # set width of displayed images
+                      warning=FALSE,      # show R warnings
+                      message=FALSE)      # show R messages
+options(dplyr.summarise.inform = FALSE)  # ignore message about group structure
+```
+
+
+
+### Introduction
+
+Think about a time when you are posting your favorite pet pictures on Instagram, or watching your favorite Game of Thrones episode on HBO, or listening to your favorite song on Spotify, you are benefiting from an algorithm called FFT, the Fast Fourier Transform. Three major applications of FFT are frequency analysis, denoising/smoothing, pattern recognition and forecasting time series data. For every data scientist, it is not an exaggeration to say that FFT is a must-have tool that you would wish you had learned in school. But if you don’t, this blogpost will be the perfect tutorial to get you started.
+
+### Historical Background
+
+Let’s first begin with a bit of history. Two hundred years ago, Jean Baptiste Fourier (1768-1830) came up with a controversial idea of the Fourier series, which states that any continuous, periodic function is the infinite summation of simple sine and cosine waves of different frequencies. Despite this claim is being fallible for continuous functions, Fourier’s works provided the mathematical foundation for various practical applications in physics, electrical engineering and finance.
+
+<center>
+
+![Jean Baptiste Fourier (from [Wikipedia](https://en.wikipedia.org/wiki/Joseph_Fourier))](joseph_fourier.jpg){width=25%}
+
+</center>
+
+Today, when we talk about the family of Fourier transforms, it generally means the decomposition of an arbitrary function into sinusoids. And, there are four subtypes depending on the continuity and periodicity of the original function to be transformed. Each of the four subtypes has both a real version and a complex version. The real version is the simplest and deals with real numbers, whereas the complex version is more complicated and deals with complex numbers.
+
+### Overview
+
+For many of you who don't have a strong background in math, the concept of Fourier transform is rather abstract. Perhaps you already felt overwhelmed by all the terminologies up to this point. But it is really not that difficult! And as data scientists, we only need to deal with finite and discrete data sampled from the real world. So, all you really need to know are only one subtype of the Fourier transform family, the Discrete Fourier Transform (DFT).
+
+Before jumping into math and code, there are a few jargons you may need to know beforehand. Since the DFT is so widely used in digital signal processing, the function to be transformed is very often interchangeably with input signal or waveform. But it can also be the price of stock options in finance, and other names in different domains. The input function is also said to be in the time domain simply because DFT most often deals with time-indexed data, which does not necessarily have to. The output of DFT are sine and cosine waves with corresponding amplitudes and it is often said to be in frequency domain. Similar to x and y arises in the Cartesian coordinate system, the basis functions of DFT are sine and cosine waves, and the amplitudes are just the coefficients or weights. The decomposition, or the Fourier Transform, is simply the coordinate transformation from time domain to frequency domain, whereas the synthesis, or the Inverse Fourier Transform, is the opposite process that transforms output frequencies back to the input in the time domain. 
+
+Alright, it is time to dive into a fun example of solving for DFT. We will explain all the math behind. Then we will introduce FFT, which is the most efficient algorithm for computing DFT. We will also walk you through a code up tutorial for how to analyze time series data with the FFT algorithm.
+
+### Chord Problem
+
+Suppose a musician played a chord containing three notes on his synthesizer. If you happened to take an audio recording of the chord, you might see the chord as something like the following: 
+
+```{r, echo=FALSE}
+library(ggplot2)
+library(gridExtra)
+
+# x = seq(0, 0.10*pi, length.out=10000)
+set.seed(2020)
+x = seq(0, 1, length.out=5000)
+
+
+y1 = sin(2*pi*196*x)     # musical note - G3
+y2 = sin(2*pi*247*x)     # musical note - B3
+y3 = sin(2*pi*293.7*x)   # musical note - D4
+
+y = y1+y2+y3
+
+qplot(x, y, geom="path", xlab="time", ylab="x") +
+  labs(x="Time (sec)", y="Amplitude") +
+  xlim(0, 0.1)
+```
+
+Given that this audio is presented on the time domain (i.e. plot of amplitude against time), is it possible to decompose this signal back into its three original notes? 
+
+### Fourier Series
+
+Using the Fourier series, any signal $f(t)$ that is periodic on some domain (e.g. $(0, t)$) can be written as a sum of sines and cosines of increasingly high frequencies added to some constant $a_0$ scaled by a factor of two.
+
+$$f(t) = \frac{a_0}{2} + \sum_{k=1}^{\infty} [a_k \cos(2 \pi k t) + b_k \sin(2 \pi k t)]$$
+In the equation shown above, on each increment of frequency $k$, the sum of the two sinusoids at that frequency is calculated. The coefficients $a_k$, $b_k$ determine the weights of the two sinusoidal functions in relation to the signal $f(t)$. 
+
+In terms of our chord problem, the signal shown above can be written as a sum of these sinusoids. For every possible sinusoidal combination $(\cos(2 \pi k t) + \sin(2 \pi k t))$ of increasing frequency $(k\in{1,...,\infty})$, we can expect three combinations to have remarkably high coefficients $(a_k, b_k)$, since we know that our chord is composed of three notes. In order to find these three frequencies, we need to calculate the coefficients.
+
+### Fourier Transform
+
+The coefficients of a Fourier series are calculated in the Fourier transform.
+
+$$\hat{f}(k)=\int_{-\infty}^{\infty} f(t)e^{-2\pi i k t}\ dt$$
+
+Here, the signal $f(t)$ is multiplied by an analyzing function $(e^{-2\pi i k t})$. If the signal and the analyzing function are similar, then they generate a large coefficient; in contrast, if the signal and the analyzing function are not similar, then they generate a small coefficient. 
+
+In terms of efficiency, the Fourier transform calculates for one coefficient and it is represented on the [complex](https://www.youtube.com/watch?v=v0YEaeIClKY) plane $(e^{-2\pi i})$. Using Euler's formula, we can see how the two sinusoids relate to the complex number.
+
+$$e^{ix}=\cos x+i \sin x$$
+
+The weights $(a_k, b_k)$ can be calculated using real notation; however, this requires two separate integrals to be computed for each of the $k$ frequencies in the Fourier series.    
+
+$$\hat{f}_{a}(k)=\int_{-\infty}^{\infty}f(t)\cos(2\pi k t)\ dt$$
+$$\hat{f}_{b}(k)=\int_{-\infty}^{\infty}f(t)\sin(2\pi k t)\ dt$$
+
+As previously shown in the equations above, the Fourier series and the Fourier transform are continuous; they have integrals that run from $-\infty$ to $\infty$. This is usually not implemented in practice, since the time frame of the signal $f(t)$ is finite. In other words, the length of the audio recording of the chord has a fixed time frame (e.g. 15 seconds). As an aside, audio recordings are generated by a process of sampling. The sampling rate (e.g. 44.1 kHz or 44,100 samples per second) determines how many instances the recording device registers the audio on each second. As a result, the digital information that is encapsulated in an audio recording are discrete samples of the signal $f(t)$ taken over a definite time frame.
+
+### Discrete Fourier Transform
+
+The Discrete Fourier Transform (DFT) is used to conduct a Fourier transform on a discrete set of samples.
+
+$$\hat{f}_k=\sum_{n=0}^{N-1}f_n \cdot e^{-\frac{2 \pi i kn}{N}}$$
+
+In the DFT, we no longer have an integral that runs from $-\infty$ to $\infty$. Rather, there is a summation of $N$ samples starting from $n=0$ and ending at $n=N-1$. In the continuous Fourier series, we considered an infinite number of frequencies $(k\in{1,...,\infty})$ over a continuous time domain $(t \in -\infty, ..., \infty)$ in order to find the best frequencies that compose the signal $f(t)$; in contrast, the DFT considers a fixed number $k$ frequencies for a discrete number of $N$ samples. The continuous $k$ frequencies from the Fourier series corresponds to the sampling frequency $\frac{k}{N}$ in the DFT. Likewise, the time $t$ from the continuous time domain in the Fourier series corresponds to the sample number $n$ from the discrete sample domain $N$ in the DFT.
+
+### Complex Plane
+
+Using Euler's formula, the DFT can be rewritten as the following:
+
+$$\hat{f}_k=\sum_{n=0}^{N-1}f_n \cdot \left [\cos \left (\frac{2 \pi k n}{N} \right) -i \cdot \sin \left(\frac{2 \pi k n}{N}\right) \right]$$
+
+$$\hat{f}_k=f_0 \cdot \left [\cos \left (\frac{2 \pi k n}{N} \right) -i \cdot \sin \left(\frac{2 \pi k n}{N}\right) \right] + \dots + f_{N-1} \cdot \left [\cos \left (\frac{2 \pi k n}{N} \right) -i \cdot \sin \left(\frac{2 \pi k n}{N}\right) \right]$$
+
+After substituting the signal data, the summation shown above resolves into a constant complex number that contains the weights $(a_k, b_k)$.
+
+$$\hat{f}_k=a_k+b_k i$$
+
+Consider a two-dimensional plot where the x-axis contains real numbers (i.e. real axis) and the y-axis contains imaginary numbers (i.e. the imaginary axis).
+
+<center>
+
+![Depiction of a complex plane (from [Khan Academy](https://www.khanacademy.org/math/algebra2/x2ec2f6f830c9fb89:complex/x2ec2f6f830c9fb89:complex-plane/a/the-complex-plane))](complex_plane.png){width=50%}
+
+</center>
+
+In the plot above, the weights $(a_k=3, b_k=-5)$ are shown. Suppose these weights are presented as a vector $\vec{w}=(a_k, b_k)$ on the complex plane. The magnitude $\|w\|$ and angle $\theta$ of this vector are calculated by the following:
+
+$$\| w \| = \sqrt{a_k^2+b_k^2}$$
+
+$$\theta=\arctan \left (\frac{b_k}{a_k} \right)$$
+
+The amplitude and phase shift of a sinusoidal function with frequency $k$ are the magnitude $\|w\|$ and angle $\theta$ of the weight vector $\vec{w}$, respectively.
+
+### Chord Problem Solution
+
+To solve the chord problem, we must first determine the sampling frequency and duration of the audio recording. Assuming that the audio recording has a sampling frequency of $5000$ samples per second for a duration of $1$ second, then there are $N=5000 \cdot 1= 5000$ samples. 
+
+The number of frequencies to calculate are $k=0, ..., 4999$.
+
+The amplitudes of the chord are in $f(n)$, where $n=0,..., 4999$. For example, the amplitudes of the samples from the musical chord are $[0.000, 0.910, ..., -0.951]$. This is simply noted as the following:
+
+$$f_0=0.000, f_1=0.910, ..., f_{4999}=-0.951$$
+
+Given this, let's use DFT to decompose the main signal.
+
+$$\hat{f}_k=\sum_{n=0}^{N-1}f_n \cdot e^{-\frac{2 \pi i kn}{N}}$$
+
+$$\hat{f}_k=\sum_{n=0}^{4999}f_n \cdot e^{-\frac{2 \pi i kn}{5000}}$$
+
+Let's take a look at the first frequency, where $k=0$.
+
+$$\hat{f}_0=f_0\cdot e^{-\frac{2 \pi i (0)(0)}{5000}} + f_1 \cdot e^{-\frac{2 \pi i (0)(1)}{5000}} + \dots + f_{4999} \cdot e^{-\frac{2 \pi i (0)(4999)}{5000}}$$ 
+Since there are zeros in the numerators of all the exponentials of $e$, the analyzing function reduces to $1$.
+
+$$\hat{f}_0=(0) e^0 + (0.919) e^0 +\dots+ (-0.951) e^0$$
+$$\hat{f}_0=3.030$$
+
+Here, the coefficients are $a_0=3.030$ and $b_0=0$.
+
+Now, let's look at the second frequency, where $k=1$.
+
+$$\hat{f}_1=f_0\cdot e^{-\frac{2 \pi i (1)(0)}{5000}} + f_1 \cdot e^{-\frac{2 \pi i (1)(1)}{5000}} + \dots + f_{4999} \cdot e^{-\frac{2 \pi i (1)(4999)}{5000}}$$ 
+
+Using Euler's formula, the DFT can be rewritten as the following:
+
+$$\begin{equation} \begin{aligned} \hat{f}_1=f_0 \cdot \left [\cos \left (\frac{2 \pi (1)(0)}{5000} \right) -i \cdot \sin \left(\frac{2 \pi (1) (0)}{5000}\right) \right] + f_{1} \cdot \left [\cos \left (\frac{2 \pi (1)(1)}{5000} \right) -i \cdot \sin \left(\frac{2 \pi (1) (1)}{5000}\right) \right] + \dots \\ + \ f_{4999} \cdot \left [\cos \left (\frac{2 \pi (1)(4999)}{5000} \right) -i \cdot \sin \left(\frac{2 \pi (1) (4999)}{5000}\right) \right] \end{aligned} \end{equation}$$
+
+$$\hat{f}_1= (0)\cdot [\cos(0) - i \cdot \sin(0)] + (0.910)\cdot[\cos(0.00126)-i\cdot\sin(0.00126)]+\dots+(-0.951)\cdot[cos(6.282)-i\cdot\sin(6.282)]$$
+$$\hat{f}_1=3.030+0.000444i$$
+
+Here, the coefficients are $a_1=3.030$ and $b_1=0.000444$.
+
+### Matrix Notation
+
+The remainder of the DFT calculations will be presented in matrix-vector notation. The fundamental frequencies $\omega$ can be taken out of the analyzing function $\left (e^{-\frac{2 \pi i kn}{N}} \right)$ and be represented as the following:
+
+$$\omega=e^{-\frac{2 \pi i}{N}}$$
+
+Now the analyzing function is simply $\omega^{k \cdot n}$.  
+
+The output of the DFT $\hat{f}(k)$ and the amplitudes for all $N$ samples in the signal $f(n)$ are represented as the following:
+
+$$\begin{align} \hat{f}(k)= \begin{bmatrix} 
+\hat{f}_0 \\
+\hat{f}_1 \\
+\hat{f}_2 \\
+\vdots \\
+\hat{f}_k \end{bmatrix}, f(n)= \begin{bmatrix} 
+f_0 \\
+f_1 \\
+f_2 \\
+\vdots \\ 
+f_n \end{bmatrix} \end{align}$$
+
+The DFT computed in matrix-vector notation is shown below:
+
+$$\hat{f}_k=\sum_{n=0}^{N-1}f_n \cdot e^{-\frac{2 \pi i kn}{N}}$$
+$$\begin{align} \begin{bmatrix}
+\hat{f}_0 \\
+\hat{f}_1 \\
+\hat{f}_2 \\
+\hat{f}_3 \\
+\vdots \\
+\hat{f}_k \end{bmatrix} = \begin{bmatrix}
+1 & 1 & 1 & \dots & 1 \\
+1 & \omega^{1 \cdot 1} & \omega^{1 \cdot 2} & \dots & \omega^{1 \cdot n} \\
+1 & \omega^{2 \cdot 1} & \omega^{2 \cdot 2} & \dots & \omega^{2 \cdot n} \\
+1 & \omega^{3 \cdot 1} & \omega^{3 \cdot 2} & \dots & \omega^{3 \cdot n} \\
+\vdots & \vdots & \vdots & \ddots & \vdots \\
+1 & \omega^{k \cdot 1} & \omega^{k \cdot 2} & \dots & \omega^{k \cdot n} \end{bmatrix} \begin{bmatrix}
+f_0 \\
+f_1 \\
+f_2 \\
+f_3 \\
+\vdots \\ 
+f_n \end{bmatrix} \end{align}$$
+
+### DFT Implementation in R
+
+```{r}
+# number of samples
+N = 5000
+
+# sample indexes 
+n = seq(0, N-1)
+
+# create an N x N transform matrix
+transform_matrix = matrix(NA, N, N)
+
+# populate transform matrix
+for (k in 0:N-1) {
+  # complex number implementation
+  theta = (2*pi*k*n)/N
+  transform_matrix[k, ] = complex(real=cos(theta), imaginary=-sin(theta))
+}
+
+# results of DFT
+coeff = transform_matrix %*% y
+
+# consider only 1/2 of the coefficients
+one_sided = coeff[1:(N%/%2)]
+
+# coefficients a, b
+a = Re(one_sided)*2
+b = Im(one_sided)*2
+
+# amplitudes scaled by N
+amplitudes = sqrt((a)^2 + (b)^2)/N
+
+# visualization of peaks
+qplot(x=n[1:(N%/%2)], y=amplitudes, geom="path") + 
+  labs(x="Frequency (Hz)", y="Amplitude")
+```
+<br>
+<br>
+The results of the DFT identify three frequencies that compose the musical chord. As shown below, these three frequencies are 196 Hz, 247 Hz, and 294 Hz; the associated amplitudes for these signals are approximately 0.997, 0.993, and 0.906, respectively. We can look up these frequencies [online](https://www.szynalski.com/tone-generator/) and find the three notes that compose the chord. The musician played the G3, B3, and D4 notes on his synthesizer; these notes are the 1st, 3rd, and 5th of the G major chord.
+
+```{r}
+# find indexes at peaks
+peaks = sort(amplitudes, decreasing=TRUE)[1:3]
+i = which(amplitudes %in% peaks)
+
+# parameters of the signal decomposition
+freqs = i * (5000/N); freqs
+amps = amplitudes[i]; amps
+
+# recreate the signal from our obtained parameters
+y1 = amps[1]*sin(2*pi*freqs[1]*x)    # musical note - G3
+y2 = amps[2]*sin(2*pi*freqs[2]*x)    # musical note - B3
+y3 = amps[3]*sin(2*pi*freqs[3]*x)    # musical note - D4
+
+# comparison of DFT output and original signal
+ggplot(NULL) +
+  geom_line(aes(x=x, y=y, col="Original Chord")) + 
+  geom_line(aes(x=x, y=y1+y2+y3, col="DFT Output")) +
+  xlim(0, 0.1) +
+  labs(x="Time (sec)", y="Amplitude", color="Key")
+```
+
+In the plot shown above, we can see how well the results of DFT approximate the original signal. Using DFT, we were able to decompose a complicated signal into its principal components. As you can see from its implementation, this algorithm does not scale well for larger signals. 
+
+### Fast Fourier Transform
+
+####**Introduction**
+
+FFT is another algorithm to calculate the DFT. FFT is a very commonly used algorithm in many aspects of daily life, specifically digital communication. It is used in audio and image compression, radio, and satellite television. FFT is the primary way DFT is calculated in all modern applications. The reason for this is that the major benefit of FFT compared to the original DFT algorithm is that FFT is an O(n log(n)) time algorithm, as compared to O(n^2) of DFT. While this may not matter in small isolated cases, many DFT applications tend to have a quite large n (amount of pieces of information in the matrix). 
+Let us take a look at an example with n being equal to 100,000 data points. 
+The big O time of n log (n) = 100,000 (5) = 500,000
+The big O time of n^2 = 100,000 (100,000) = 10,000,000,000
+This means that it is 20,000 times faster to use the FFT algorithm in order to calculate the DFT as compared to the Discrete Fourier Transform algorithm. Some useful applications of FFT which would otherwise be extremely computationally expensive include calculating derivatives, data analysis, removing the noise from data, and audio and video compression.  The n tends to be very large for audio and image compression and FFT is a key part of why we can stream videos on sites such as youtube, and stream music so effortlessly in the modern age.
+
+#### **Matrix Math**
+
+We are going to make n= 1024, because it is easy to observe how FFT is so efficent when the matrix is a power of 2. F is going to be our matrix which is 1024 x 1024 used to calculate DFT in this case. 
+$\hat{f}$ is a vector of all the Fourier coefficents. 
+\
+$\hat{f}=F_{1024}f$
+\
+In order to do do FFT we reorganize how f is structured by making in the product of two matricies and multiply it by $f_{even}$ and $f_{odd}$. $f_{even}$  is all the points with even indicies and $f_{odd}$ is all the points with odd indicies. We are able to convert our large 1024x1024 matrix to smaller matrix pieces as shown below. The I matrix are just identities, and the D matrixes are just daiagonals.\
+\
+f= $$\begin{array}
+{rrr}
+I_{512}& -D_{512} \\
+I_{512}& -D_{512} \\
+\end{array}*
+\begin{array}
+{rrr}
+F_{512}& 0 \\
+0& F_{512} \\
+\end{array}*
+\begin{array}
+{rrr}
+F_{even} \\
+ F_{odd} \\
+\end{array}$$
+
+#### **Time Series Example**
+
+Now we will look at FFT applied to time series. In order to use FFT, we decompose a time series into a simpler calculation and then apply forecasting. In order to decompose a time series, we need to remember the theorem discussed before, which states that any function which is reasonably continuous and periodic is able to be expressed as the sum of a series of sine/ cosine functions. Basically what this means is that we can break down the time series into a collection of smaller and smaller sine functions. The more sine functions we use, the more accurate of a prediction we can get. When we combine our decomposed sine functions, we get a representation of the original time series. The steps to run this are
+
+1. Run FFT on the time series
+2. Filter any low amplitude and high-frequency components as these are noise which must be removed from the data
+3. Next, we create sine functions based on dominant frequencies
+4. Finally, we combine the sine functions to get the forecast
+
+An example of this is shown below with code and visuals
+
+
+### R Implementations and Examples
+
+In this section, we are going to implement the three major application of FFT in R: frequency analysis, denoising/smoothing, forecasting.
+
+#### Basic Example with Simulated Data
+
+Here are the packages we used.
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(spectral)
+library(ggpmisc)
+library(zoo)
+library(TSA)
+library(forecast)
+theme_set(theme_bw())
+```
+
+
+Let's first use basic sine functions to simulate periodic time series. These basic sine functions are sometimes called *harmonics*.
+```{r basic, fig.height = 7}
+xs = seq(- pi, pi, pi/100)
+wave1 = sin(3 * xs)
+wave2 = sin(5 * xs)
+wave3 = sin(10 * xs)
+wave4 = sin(50 * xs)
+wave5 = sin(64 * xs)
+
+waves = data.frame(xs, wave1, wave2, wave3, wave4, wave5)
+
+plot.ts(waves[,-1], nc = 1, main = "Basic waves")
+```
+For this example, we constructed 5 different basic sine waves with freqencies (in HZ) of 2, 5, 10, 50, and 64. Wave 1,2 and 3 are our main signals, and wave 4 and 5 would be our noise. In the real-world, waves that have high freqency and exist evenly throughout the entire time series are usually noise. 
+
+Now, let's try to linearly combine these sine waves and see what happens.
+```{r}
+wave_comp = 5 + 1 * wave1 + 0.8 * wave2 + 0.6 * wave3 + 0.3 * wave4 + 0.3 * wave5
+wave_noise = wave_comp + rnorm(length(xs), sd = 0.1)
+
+plot.ts(wave_noise, ylab="Value", main = "Complex wave")
+```
+Once we sum up all the basic sine waves with weights and added a noise, the resulting time series seems very irregular and aperiodic. Unlike the basic sine waves, this complex time series makes it hard for us to identify trends and periods. The weights of the basic waves and the standard deviation of the noise is chosen arbitrarily. You can adjust these parameters to generate different time series to your liking.
+
+Here is a simple visualization of combining waves 1, 2, and 3.
+```{r}
+waves %>% 
+  select(xs, wave1, wave2, wave3) %>% 
+  mutate(combined_wave = wave1 + wave2 + wave3) %>% 
+  pivot_longer(-xs) %>% 
+  ggplot(aes(xs, value)) +
+  geom_line(aes(color = name, linetype = name, size = name)) +
+  scale_size_manual(values = c(2, 1, 1, 1)) + 
+  theme(legend.position="top")
+```
+
+
+To tackle this complex time series we created, we can use FFT to conduct frequency analysis and denoise.
+
+In frequency analysis, our goal is to identify some of the dominant frequencies in a time series. For our simulated time series, the 5 dominant frequencies should be 3, 5, 10, 50, 64. For other real-world data, we might expect weekly, monthly, or annual periods. 
+
+Periodogram are great tools in frequency analysis to help us visualize the dominant frequencies. Instead of time in the x-axis, periodograms have freqencies in the x-axis. The y-axis represents the strength of that freqency. 
+
+Let's look at the periodogram to see what dominant periodic frequencies are in our time series.
+
+To make things easier, we wrote the following plotting function utilizing FFT. This function will generate a periodogram and highlights the dominant frequencies.
+```{r}
+plot.spec <- function(ts, xlim = (length(spec) - 1)/2, threshold = 0.2, span = 1){
+  ts = ts - mean(ts)
+  spec = fft(ts)
+  time = 0:(length(spec) - 1)
+  df = data.frame(Frequency = time, Spec = 2 * Mod(spec)/ sum(Mod(spec)))
+  df %>% 
+    ggplot(aes(Frequency, Spec)) + geom_bar(stat="identity") +
+    stat_peaks(colour = "red", ignore_threshold = threshold, span = span) +
+    stat_peaks(geom = "text", colour = "red", vjust = -0.5, ignore_threshold = threshold, span = span) +
+    xlim(0, xlim) +
+    ylab("Spectral Density") +
+    theme(legend.position = "none")
+}
+```
+
+
+```{r}
+plot.spec(wave_noise)
+```
+Here we can see that our **plot.spec** function correctly identified all 5 major frequencies hidden in our complex time series. This is a perfect example that FFT can be a powerful tool in frequency analysis. The spectral density of these major frequencies roughly correspond to the weights of the 5 basic sine waves. So, not only can we spot the dominant frequencies for a time series, we can also infer each frequencies respective weights.
+
+Now for denoising/smoothing, we can simply use FFT to identify high frequency waves, and remove to smooth our time series. Not all high frequency waves are noise, so different data will require different approaches.
+
+We first write a simple function that allows us to remove waves that have a higher frequency than a certain threshold.
+```{r}
+fft.filter <- function(ts, freq.threshold) {
+  DC = mean(ts)
+  ts = ts - DC
+  spec = fft(ts)
+  spec[freq.threshold:(length(ts) - freq.threshold)] = mean(spec)
+  ts.new = Re(fft(spec, inverse = TRUE) / length(spec)) + DC
+  return(ts.new)
+}
+```
+
+
+We then apply the denoising function to our noisy complex wave to remove waves that have a frequency greater than 40.
+```{r}
+denoised.ts = fft.filter(wave_noise, 40)
+
+plot.ts(wave_noise, lwd = 2, col = "grey", main = 'Denoised Wave')
+lines(denoised.ts)
+```
+The grey line represent the unsmoothed time series, and the black line represent the smoothed time series. Now, the time series plot is a lot smoother than our original one. Still, from this plot, we can barely see any kind of periodic pattern in the time series.
+
+For forecasting with FFT, the steps are pretty simple. We first use FFT to find the remove noise and find dominant frequencies. Then we use the identified freqencies to construct basic sine waves. Lastly, we add a phase shift to the sine waves to forecast the future.
+
+Here is a forecasting function we wrote that work specifically for periodic time series.
+```{r}
+fft.forecast <- function(ts, n_pred = 10, n_harm = 5){
+  DC = mean(ts)
+  ts = ts - DC
+  spec = fft(ts)
+  time = 0:(length(spec) - 1)
+  ffreq = length(spec) - 1
+  df = data.frame(Freq = time, Spec = (2 * Mod(spec))/ sum(Mod(spec)))
+  df = df %>% slice(2: (ffreq%/%2)) %>% arrange(-Spec) %>% head(n_harm)
+  xs.new = 0:(length(spec) - 1 + n_pred)
+  ts.new = sapply(xs.new, function(t) sum(df[['Spec']] * 10/2 * sin(df[['Freq']] * (1/ffreq) * 2 * pi * (t + ffreq%/%2))) + DC)
+  return(ts.new)
+}
+```
+
+Now, we apply the function to our complex wave.
+```{r}
+wave.new = fft.forecast(wave_noise)
+
+plot.ts(wave.new, col = 'red')
+lines(wave_noise)
+```
+The black line represent the original complex time series, the red line represent the fitted time series used to forecast. We can see that our function did very well.
+
+
+In terms of forecast, FFT is not necessary the best method to use on time series. There are more popular methods and packages like ARIMA, Holt-Winters (triple exponential smoothing), Wavelets etc.. Here we used the most generic and esay to use forecasting function in R called **forecast** from the package *"forecast"*. We can see that it also produce decent result.
+```{r}
+ts.wave = ts(wave_noise[0: (length(wave_noise) - 9)])
+
+ff = forecast(ts.wave, h = 9)
+
+plot(ff)
+lines(wave_noise)
+```
+The black line represent the original complex time series, the blue line represent the forecasted points, shaded area represent the confidence interval of the forecasts. 
+
+
+#### Real-Life Examples
+
+Here, let's apply FFT to some real-world data. 
+
+The data that we are using is the number of daily visit to a online Google Analytics report from Nov, 2013 to Nov, 2015.
+```{r}
+google = read.csv("https://raw.githubusercontent.com/TigerHu28/Data/main/20131120-20151110-google-analytics.csv")
+
+plot.ts(google$Visite) # plot the time series plot
+
+plot.spec(google$Visite, xlim = 400, threshold = 0.4, span = 3) # plot the periodogram
+
+nrow(google) / c(2, 103) # convert frequencies to periods
+```
+For the google time series, we use the periodogram to see the 2 dominant frequencies. We than convert the frequecies to periods and intepret the result. The resulting periods are 360.5, and 7, which indicate that the daily visit to the online Google Analytics report have a yearly and a weekly cycle.
+
+We can also use function **periodogram** from the package *"TSA"* to conduct frequency analysis on the same data. The **periodogram** function uses a slightly different FFT algorithms. It can handle non-integer frequencies better than our home-made **plot.spec** function.
+```{r}
+p = periodogram(google$Visite)
+
+dd = data.frame(freq=p$freq, spec=p$spec)
+order = dd[order(-dd$spec),]
+top2 = head(order, 2)
+
+1/top2$f
+```
+We can see that the periods returned by the **TSA::periodogram** function are 7.009615 364.500000. These periods are closer to 7 days, and 365 days cycles that the result of our **plot.spec** function.
+
+
+Additionally, since this google time series showed a fanning out pattern and pretty strong trend, we concluded that this time series have strong autocorrelation, trend, and seasonality. FFT forecasting is pretty ineffective dealing with this kind of data. Therefore, we opt to use **auto.arima** function from *"forecast"* package to conduct forecast.
+```{r}
+googlets = ts(google$Visite)
+
+fit <- auto.arima(googlets)
+
+plot(forecast(fit, 20))
+```
+
+### References
+
+#### Fourier Series
+
+https://en.wikipedia.org/wiki/Fourier_series
+
+[Fourier Series: Part 1](https://www.youtube.com/watch?v=MB6XGQWLV04) by Steve Brunton
+
+[Fourier Series: Part 2](https://www.youtube.com/watch?v=Ud9Xtxsi2HI) by Steve Brunton
+
+#### Fourier Transform
+
+https://en.wikipedia.org/wiki/Euler%27s_formula
+
+[But what is the Fourier Transform? A visual introduction.](https://www.youtube.com/watch?v=spUNpyF58BY) by Grant Sanderson
+
+[The Fourier Transform](https://www.youtube.com/watch?v=jVYs-GTqm5U) by Steve Brunton
+
+#### Discrete Fourier Transform
+
+https://en.wikipedia.org/wiki/Discrete_Fourier_transform
+
+https://ccrma.stanford.edu/~jos/st/DFT.html
+
+[Discrete Fourier Transform - Simple Step by Step](https://www.youtube.com/watch?v=mkGsMWi_j4Q) by Simon Xu
+
+[What is a Discrete Fourier Transform?](https://www.youtube.com/watch?v=g8RkArhtCc4) by Grant Sanderson
+
+[The Discrete Fourier Transform (DFT)](https://www.youtube.com/watch?v=nl9TZanwbBk) by Steve Brunton
+
+#### Complex Plane
+
+https://www.khanacademy.org/math/algebra2/x2ec2f6f830c9fb89:complex/x2ec2f6f830c9fb89:complex-plane/a/the-complex-plane
+
+[Understanding e to the i pi in 3.14 minutes](https://www.youtube.com/watch?v=v0YEaeIClKY) by Grant Sanderson
+
+#### Musical Chord Problem
+
+https://en.wikipedia.org/wiki/Sine_wave
+
+https://www.szynalski.com/tone-generator/
+
+https://www.intmath.com/trigonometric-graphs/music-note-frequencies-interactive.php
+
+https://www.theguitarlesson.com/guitar-theory/guitar-chords/key-g-major/
+
+
+#### Code Reference
+
+https://stackoverflow.com/questions/32359081/getting-y-axis-shift-during-fft-noise-removal
+
+http://www.di.fc.ul.pt/~jpn/r/fourier/fourier.html
+
+http://web.stanford.edu/class/earthsys214/notes/series.html
+
+https://anomaly.io/detect-seasonality-using-fourier-transform-r/index.html
+
+
+
+
+
+
+
+
+
